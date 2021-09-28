@@ -4,11 +4,14 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Mario Carneiro, Jakob von Raumer
 -/
 import Lean.Elab.Command
-import Data.Option
+import Lean.Meta.FunInfo
+import Mathlib.Data.Option
 
 open Lean Meta Inhabited
 
-namespace Tactic
+namespace Lean
+
+namespace Meta
 
 @[reducible] def ListSigma := List
 @[reducible] def ListPi    := List
@@ -23,6 +26,15 @@ inductive RCasesPatt : Type
 | tuple : List RCasesPatt → RCasesPatt
 | alts :  List RCasesPatt → RCasesPatt
 deriving Inhabited
+
+declare_syntax_cat rcases_patt
+syntax ident : rcases_patt
+syntax "⟨"rcases_patt,*"⟩" : rcases_patt
+syntax "("rcases_patt,*")" : rcases_patt
+
+macro_rules
+| `(rcases_patt|⟨a, ⟨b, c⟩⟩) => `(rcases_patt|⟨a, b, c⟩)
+| `(rcases_patt|(a, (b, c))) => `(rcases_patt|(a, b, c))
 
 namespace RCasesPatt
 
@@ -76,12 +88,36 @@ def alts₁ : ListΣ (ListΠ RCasesPatt) → RCasesPatt
 end RCasesPatt
 
 def RCases.processConstructor : Nat → ListΠ RCasesPatt → ListΠ Name × ListΠ RCasesPatt
-| 0, ps => ([], [])
-| 1, [] => ([`_], default)
-| 1, [p] => (p.name.getOrElse _, [p])
-| 1, ps => _
-| n+1, ps => _
+| 0,     ps      => ([], [])
+| 1,     []      => ([`_], default)
+| 1,     [p]     => ([p.name.getOrElse `_], [p])
+| 1,     ps      => ([`_], [RCasesPatt.tuple ps])
+| n + 1, p :: ps => let (ns, tl) := processConstructor n ps
+                    (p.name.getOrElse `_ :: ns, p :: tl)
+| _,     _       => ([], [])
 
-#check Option.get!
+def RCases.processConstructors (params : Nat) :
+  ListΣ Name → ListΣ RCasesPatt → MetaM (List Name × ListΣ (Name × ListΠ RCasesPatt))
+| [], ps           => ([], [])
+| c :: cs, p :: ps => do
+  let n := FunInfo.getArity $ ← getFunInfo (mkConst c) --TODO check if this does the right thing
+  let (h, t) := match cs, ps with
+  | [], _ :: _ => ([RCasesPatt.alts ps], [])
+  | _,  _      => (p.asTuple, ps)
+  let (ns, ps) := RCases.processConstructor (n - params) h
+  let (l,  r)  ← processConstructors params cs t
+  pure (ns ++ l, (c, ps) :: r)
+| _,       _       => panic! "Not enough `rcases` patterns!"
 
-end Tactic
+inductive RCasesArgs
+| hint (tgt : Expr) (depth : Nat)
+| rcases (name : Option Name) (tgt : Expr) (pat : RCasesPatt)
+| rcases_many (tgt : ListΠ RCasesPatt) (pat : RCasesPatt)
+
+end Meta
+
+syntax (name := Parser.Tactic.rcases) "rcases" : tactic
+
+open Meta Elab Tactic
+
+end Lean
