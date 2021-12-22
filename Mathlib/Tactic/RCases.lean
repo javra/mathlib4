@@ -19,6 +19,8 @@ namespace Meta
 local notation "ListΣ" => ListSigma
 local notation "ListΠ" => ListPi
 
+@[reducible] def UnclearedGoal := (List Expr) × MVarId
+
 inductive RCasesPatt : Type
 | one : Name → RCasesPatt
 | clear : RCasesPatt
@@ -109,10 +111,38 @@ def RCases.processConstructors (params : Nat) :
   pure (ns ++ l, (c, ps) :: r)
 | _,       _       => panic! "Not enough `rcases` patterns!"
 
+def align (p : α → β → Prop) [∀ a b, Decidable (p a b)] :
+  List α → List β → List (α × β)
+| a :: as, b :: bs =>
+  if p a b then (a, b) :: align p as bs else align p as (b :: bs)
+| _,       _       => []
+
 inductive RCasesArgs
 | hint (tgt : Expr) (depth : Nat)
 | rcases (name : Option Name) (tgt : Expr) (pat : RCasesPatt)
 | rcases_many (tgt : ListΠ RCasesPatt) (pat : RCasesPatt)
+
+open Elab Tactic
+
+#check tryTactic?
+#check getLocalDecl
+
+mutual
+
+def RCases_core (fs : FVarSubst) : RCasesPatt → Expr → TacticM (FVarSubst × List UnclearedGoal)
+| RCasesPatt.one `rfl, e => do
+  let (fs, m) ← substCore (← getMainGoal) e.fvarId! (fvarSubst := fs)
+  replaceMainGoal [m]
+  let gs ← getGoals
+  return (fs, gs.map fun g => ([], g))
+| RCasesPatt.one _, _ => do return (fs, (← getGoals).map fun g => ([], g))
+| RCasesPatt.clear, _ => _
+| _, _ => _
+
+def RCases_continue : ListΠ (RCasesPatt × Expr) → TacticM (FVarSubst × List MVarId) :=
+sorry
+
+end
 
 end Meta
 
