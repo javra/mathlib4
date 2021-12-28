@@ -9,6 +9,22 @@ import Mathlib.Data.Option
 
 open Lean Meta Inhabited
 
+namespace Lean.Parser.Tactic
+
+declare_syntax_cat rcasesPat
+syntax rcasesPatMed := sepBy1(rcasesPat, " | ")
+syntax rcasesPatLo := rcasesPatMed (" : " term)?
+syntax (name := rcasesPat.one) ident : rcasesPat
+syntax (name := rcasesPat.ignore) "_" : rcasesPat
+syntax (name := rcasesPat.clear) "-" : rcasesPat
+syntax (name := rcasesPat.tuple) "⟨" rcasesPatLo,* "⟩" : rcasesPat
+syntax (name := rcasesPat.paren) "(" rcasesPatLo ")" : rcasesPat
+syntax (name := rcases?) "rcases?" casesTarget,* (" : " num)? : tactic
+syntax (name := rcases) "rcases" casesTarget,* (" with " rcasesPat)? : tactic
+
+end Lean.Parser.Tactic
+
+
 namespace Lean
 
 namespace Meta
@@ -18,8 +34,6 @@ namespace Meta
 
 local notation "ListΣ" => ListSigma
 local notation "ListΠ" => ListPi
-
-@[reducible] def UnclearedGoal := (List Expr) × MVarId
 
 inductive RCasesPatt : Type
 | one : Name → RCasesPatt
@@ -124,30 +138,91 @@ inductive RCasesArgs
 
 open Elab Tactic
 
-#check tryTactic?
-#check getLocalDecl
+@[reducible]
+def UnclearedGoal := (List Expr) × MVarId
+
+@[reducible]
+def SubstMetaM := StateT (FVarSubst × List UnclearedGoal) MetaM
+
+#check clear
 
 mutual
 
-def RCases_core (fs : FVarSubst) : RCasesPatt → Expr → TacticM (FVarSubst × List UnclearedGoal)
+def RCases_core : RCasesPatt → Expr → SubstMetaM (List UnclearedGoal)
 | RCasesPatt.one `rfl, e => do
-  let (fs, m) ← substCore (← getMainGoal) e.fvarId! (fvarSubst := fs)
+  let (fs, m) ← substCore (← getMainGoal) e.fvarId! (fvarSubst := ← get)
+  set fs
   replaceMainGoal [m]
   let gs ← getGoals
-  return (fs, gs.map fun g => ([], g))
-| RCasesPatt.one _, _ => do return (fs, (← getGoals).map fun g => ([], g))
-| RCasesPatt.clear, _ => _
-| _, _ => _
+  return gs.map (Prod.mk [])
+| RCasesPatt.one _, _ => do return (← getGoals).map (Prod.mk [])
+| RCasesPatt.clear, _ => sorry
+| _, _ => sorry
 
-def RCases_continue : ListΠ (RCasesPatt × Expr) → TacticM (FVarSubst × List MVarId) :=
-sorry
+def RCases_continue : ListΠ (RCasesPatt × Expr) → SubstMetaM (List UnclearedGoal)
+| []  => return (← getGoals).map (Prod.mk [])
+| (pat, e) :: pes => do
+  let gs ← RCases_core pat e
+  let gs := gs.mapM fun (cs, g) => do
+    setGoals [g]
+    let ugs ← RCases_continue pes
+    return ugs.map fun (cs', gs) => (cs ++ cs', gs)
+  return (← gs).join
 
 end
 
+def clear_goals (ugs : List UnclearedGoal) : SubstMetaM Unit := do
+  let gs ← ugs.mapM fun (cs, g) => do
+    setGoals [g]
+    let cs ← cs.foldrM _ _
+    let foo ← tryClearMany _ _
+    return _
+  setGoals gs
+
 end Meta
 
-syntax (name := Parser.Tactic.rcases) "rcases" : tactic
+def clearGoals (ugs : List ((Array FVarId) × MVarId)) : TacticM Unit := do
+  let gs ← ugs.mapM fun (cs, g) => do
+    setGoals [g]
+    pure $ ← tryClearMany g cs
+  setGoals gs
 
-open Meta Elab Tactic
+inductive RCasesArgs
+| hint (tgt : Expr) (depth : Nat)
+| rcases (name : Option Name) (tgt : Expr) (pat : RCasesPatt)
+| rcases_many (tgt : ListΠ RCasesPatt) (pat : RCasesPatt)
+
+/-
+declare_syntax_cat rcasesPat
+syntax rcasesPatMed := sepBy1(rcasesPat, " | ")
+syntax rcasesPatLo := rcasesPatMed (" : " term)?
+syntax (name := rcasesPat.one) ident : rcasesPat
+syntax (name := rcasesPat.tuple) "⟨" rcasesPatLo,* "⟩" : rcasesPat
+syntax (name := rcasesPat.paren) "(" rcasesPatLo ")" : rcasesPat
+syntax (name := rcases?) "rcases?" casesTarget,* (" : " num)? : tactic
+syntax (name := rcases) "rcases" casesTarget,* (" with " rcasesPat)? : tactic
+-/
+
+def RCasesPatt.Parse : Syntax → MetaM RCasesPatt
+| `(rcasesPat|_) => RCasesPatt.one `_
+| `(rcasesPat|rfl) => RCasesPatt.one `rfl
+| `(rcasesPat|-) => RCasesPatt.clear
+| `(rcasesPat|⟨$[$ps:rcasesPat|* $[: $t:term]?],*⟩) => do
+   let ps := Array.zip (ps.map Syntax.SepArray.getElems) t
+   let f ← _
+   return RCasesPatt.tuple' $ ps.toList.map f
+| `(rcasesPat|($ps:rcasesPat|* $[: $t:term]?)) => _
+| _ => throwUnsupportedSyntax
+
+open Meta Elab Parser.Tactic
+
+elab "rcases " tgts:casesTarget " with " pat:rcasesPat : tactic => pure ()
+
+end Lean.Elab.Tactic
+
+example (m : Nat) : m > 0 ∨ m ≤ 4 := by
+  skip
+  rcases m with ⟨⟩
+
 
 end Lean
