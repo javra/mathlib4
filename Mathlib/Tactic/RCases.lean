@@ -173,21 +173,18 @@ partial def RCases_continue : ListΠ (RCasesPatt × Expr) → SubstMetaM (List U
 
 end
 
-def clearGoals (ugs : List UnclearedGoal) : SubstMetaM Unit := do
-  let gs ← ugs.mapM fun (cs, g) => do
-    setGoals [g]
-    let cs ← cs.foldrM _ _
-    let foo ← tryClearMany _ _
-    return _
-  setGoals gs
+def clearGoals (ugs : List UnclearedGoal) : SubstMetaM (List MVarId) :=
+  ugs.mapM fun (cs, g) => do
+    let (fs, _) ← get
+    let cs : List Expr := (cs.map fs.apply).filter Expr.isFVar
+    tryClearMany g $ (cs.map Expr.fvarId!).toArray
 
 end Meta
-
 
 inductive RCasesArgs
 | hint (tgt : Expr) (depth : Nat)
 | rcases (name : Option Name) (tgt : Expr) (pat : RCasesPatt)
-| rcases_many (tgt : ListΠ RCasesPatt) (pat : RCasesPatt)
+| rcases_many (tgt : ListPi RCasesPatt) (pat : RCasesPatt)
 
 /-
 declare_syntax_cat rcasesPat
