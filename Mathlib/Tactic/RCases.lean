@@ -142,36 +142,38 @@ open Elab Tactic
 def UnclearedGoal := (List Expr) × MVarId
 
 @[reducible]
-def SubstMetaM := StateT (FVarSubst × List UnclearedGoal) MetaM
-
-#check clear
+def SubstMetaM := StateT (FVarSubst × List MVarId) MetaM
 
 mutual
 
-def RCases_core : RCasesPatt → Expr → SubstMetaM (List UnclearedGoal)
+partial def RCases_core : RCasesPatt → Expr → SubstMetaM (List UnclearedGoal)
 | RCasesPatt.one `rfl, e => do
-  let (fs, m) ← substCore (← getMainGoal) e.fvarId! (fvarSubst := ← get)
-  set fs
-  replaceMainGoal [m]
-  let gs ← getGoals
-  return gs.map (Prod.mk [])
-| RCasesPatt.one _, _ => do return (← getGoals).map (Prod.mk [])
-| RCasesPatt.clear, _ => sorry
-| _, _ => sorry
+  match ← get with
+  | (fs, g :: gs) =>
+    let (_, g) ← substCore g e.fvarId! (fvarSubst := fs)
+    return (g :: gs).map (Prod.mk [])
+  | (fs, []) => throwError "foo"
+| RCasesPatt.one _, _ => do return (← get).2.map (Prod.mk [])
+| RCasesPatt.clear, e => do
+  let (fs, gs) ← get
+  let e := fs.apply e
+  return (← get).2.map (Prod.mk [e])
+| RCasesPatt.alts [p], e => RCases_core p e
+| _, _ => do return []
 
-def RCases_continue : ListΠ (RCasesPatt × Expr) → SubstMetaM (List UnclearedGoal)
-| []  => return (← getGoals).map (Prod.mk [])
-| (pat, e) :: pes => do
+partial def RCases_continue : ListΠ (RCasesPatt × Expr) → SubstMetaM (List UnclearedGoal)
+| []  => do return (← get).2.map (Prod.mk [])
+| ((pat, e) :: ps) => do
   let gs ← RCases_core pat e
-  let gs := gs.mapM fun (cs, g) => do
-    setGoals [g]
-    let ugs ← RCases_continue pes
-    return ugs.map fun (cs', gs) => (cs ++ cs', gs)
-  return (← gs).join
+  List.join <$> gs.mapM fun (cs, g) => do
+    let (fs, _) ← get
+    set (fs, [g])
+    let ugs ← RCases_continue ps
+    pure $ ugs.map fun (cs', g) => (cs ++ cs, g)
 
 end
 
-def clear_goals (ugs : List UnclearedGoal) : SubstMetaM Unit := do
+def clearGoals (ugs : List UnclearedGoal) : SubstMetaM Unit := do
   let gs ← ugs.mapM fun (cs, g) => do
     setGoals [g]
     let cs ← cs.foldrM _ _
@@ -181,11 +183,6 @@ def clear_goals (ugs : List UnclearedGoal) : SubstMetaM Unit := do
 
 end Meta
 
-def clearGoals (ugs : List ((Array FVarId) × MVarId)) : TacticM Unit := do
-  let gs ← ugs.mapM fun (cs, g) => do
-    setGoals [g]
-    pure $ ← tryClearMany g cs
-  setGoals gs
 
 inductive RCasesArgs
 | hint (tgt : Expr) (depth : Nat)
@@ -203,16 +200,26 @@ syntax (name := rcases?) "rcases?" casesTarget,* (" : " num)? : tactic
 syntax (name := rcases) "rcases" casesTarget,* (" with " rcasesPat)? : tactic
 -/
 
+open Elab
+
 def RCasesPatt.Parse : Syntax → MetaM RCasesPatt
 | `(rcasesPat|_) => RCasesPatt.one `_
 | `(rcasesPat|rfl) => RCasesPatt.one `rfl
 | `(rcasesPat|-) => RCasesPatt.clear
 | `(rcasesPat|⟨$[$ps:rcasesPat|* $[: $t:term]?],*⟩) => do
-   let ps := Array.zip (ps.map Syntax.SepArray.getElems) t
-   let f ← _
-   return RCasesPatt.tuple' $ ps.toList.map f
+   let ps := ps.map Syntax.SepArray.getElems
+   let ps := Array.zip ps t
+   let f
+   | (p, none)   => do
+     RCasesPatt.alts' $ (← p.toList.mapM Parse)
+   | (p, some t) => do
+     let alts := RCasesPatt.alts' $ (← p.toList.mapM Parse)
+     RCasesPatt.typed alts t
+   return RCasesPatt.tuple' $ ← ps.toList.mapM f
 | `(rcasesPat|($ps:rcasesPat|* $[: $t:term]?)) => _
 | _ => throwUnsupportedSyntax
+
+#check RCasesPatt.alts'
 
 open Meta Elab Parser.Tactic
 
@@ -222,7 +229,7 @@ end Lean.Elab.Tactic
 
 example (m : Nat) : m > 0 ∨ m ≤ 4 := by
   skip
-  rcases m with ⟨⟩
+  rcases m with ⟨⟨a, c⟩|b : Nat⟩
 
 
 end Lean
